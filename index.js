@@ -7,6 +7,8 @@ import fs from 'fs';
 import { parsePhoneNumber } from 'libphonenumber-js';
 import 'dotenv/config';
 import dayjs from 'dayjs';
+
+
 import { incrementRequest, incrementCommand } from './metrics.js';
 const miWebhook = 'https://hook.us2.make.com/oc8y798y9admwow37cjd3leqjexchwk3';
 
@@ -45,22 +47,52 @@ function parseArgs(rawString) {
     tokens.splice(phoneIndex, 1);
   }
 
-  // Monto
-  const amountIndex = tokens.findIndex(t => /^\d+(\.\d{1,2})?$/.test(t));
+  // Monto y formato por componentes
+  const amountIndex = tokens.findIndex(t => /^\d+(?:\.\d{1,2})?$/.test(t));
   if (amountIndex > -1) {
-    amount = parseFloat(tokens[amountIndex]);
+    // Decomponer cantidad en millares, centenas, decenas y unidades
+    let rawAmount = parseInt(tokens[amountIndex], 10);
+    const comps = [];
+    [1000, 100, 10, 1].forEach(place => {
+      const v = Math.floor(rawAmount / place) * place;
+      if (v > 0) {
+        comps.push(v);
+        rawAmount %= place;
+      }
+    });
+    amount = comps.join(', ') + ' pesos';
     tokens.splice(amountIndex, 1);
   }
 
-  // Fecha
+  // Fecha: soporta DD/MM, DD-MM, DD/MM/YYYY, DD-MM-YYYY y YYYY-MM-DD
   const dateIndex = tokens.findIndex(t =>
-    /^(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})$/.test(t)
+    /^(\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?|\d{4}-\d{1,2}-\d{1,2})$/.test(t)
   );
   if (dateIndex > -1) {
-    const parsedDate = dayjs(tokens[dateIndex], [
-      'DD/MM/YYYY', 'D/M/YYYY', 'DD-MM-YYYY', 'YYYY-MM-DD'
-    ]);
-    if (parsedDate.isValid()) due = parsedDate.format('YYYY-MM-DD');
+    const token = tokens[dateIndex];
+    const currentYear = dayjs().year();
+    let parsedDate = null;
+
+    const parts = token.split(/[\/\-]/);
+    if (parts.length === 2) {
+      // DD/MM o DD-MM sin año
+      const [day, month] = parts.map(Number);
+      parsedDate = dayjs(new Date(currentYear, month - 1, day));
+    } else if (parts.length === 3) {
+      if (/^\d{4}-/.test(token)) {
+        // YYYY-MM-DD
+        const [year, month, day] = parts.map(Number);
+        parsedDate = dayjs(new Date(year, month - 1, day));
+      } else {
+        // DD/MM/YYYY o DD-MM-YYYY
+        const [day, month, year] = parts.map(Number);
+        parsedDate = dayjs(new Date(year, month - 1, day));
+      }
+    }
+
+    if (parsedDate && parsedDate.isValid()) {
+      due = parsedDate.format('YYYY-MM-DD');
+    }
     tokens.splice(dateIndex, 1);
   }
 
@@ -68,6 +100,13 @@ function parseArgs(rawString) {
   const name = tokens.length ? tokens.join(' ') : null;
 
   return { phone, name, amount, due, promo };
+}
+
+// Ayuda para formato de fecha
+const monthNames = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function formatDateSpan(isoDate) {
+  const [year, month, day] = isoDate.split('-');
+  return `${parseInt(day)} de ${monthNames[parseInt(month,10)-1]}`;
 }
 
 // Inicializa cliente -----------------------------------
@@ -111,7 +150,8 @@ client.on('message', async msg => {
       await msg.reply('❌ Indica al menos nombre o teléfono.');
       return;
     }
-    Object.assign(payload, { phone, name, amount, due, promo });
+    const formattedDue = due ? formatDateSpan(due) : null;
+Object.assign(payload, { phone, name, amount, due: formattedDue, promo });
   }
 
   // Envío al webhook
