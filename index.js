@@ -6,6 +6,7 @@ import axios from 'axios';
 import fs from 'fs';
 import { parsePhoneNumber } from 'libphonenumber-js';
 import 'dotenv/config';
+const miWebhook = 'https://hook.us2.make.com/ejkp3x36158bwbqape954lk6qak5a3r1';
 
 // Carga números autorizados ----------------------------
 const { senders } = JSON.parse(fs.readFileSync('./authorized.json'));
@@ -68,8 +69,7 @@ client.on('message', async msg => {
 
   // Envía al webhook Make --------------------------------
   try {
-    await axios.post(process.env.WEBHOOK_URL, payload, {
-      timeout: 8000,
+     await axios.post(miWebhook, payload, {
       headers: { 'Content-Type': 'application/json' }
     });
     console.log('📤 Webhook enviado:', payload);
