@@ -6,8 +6,9 @@ import axios from 'axios';
 import fs from 'fs';
 import { parsePhoneNumber } from 'libphonenumber-js';
 import 'dotenv/config';
+import dayjs from 'dayjs';
 import { incrementRequest, incrementCommand } from './metrics.js';
-const miWebhook = 'https://hook.us2.make.com/ejkp3x36158bwbqape954lk6qak5a3r1';
+const miWebhook = 'https://hook.us2.make.com/oc8y798y9admwow37cjd3leqjexchwk3';
 
 // Carga números autorizados ----------------------------
 const { senders } = JSON.parse(fs.readFileSync('./authorized.json'));
@@ -25,6 +26,50 @@ const normalizeMx = raw => {
 
 const isAuthorized = waId => normalizedSenders.includes(waId);
 
+// Parsing heurístico para flujo “compuesto”
+function parseArgs(rawString) {
+  const tokens = rawString.trim().split(/\s+/);
+  let phone = null, amount = null, due = null, promo = false;
+
+  // Promoción: token "p"
+  const promoIndex = tokens.findIndex(t => /^p$/i.test(t));
+  if (promoIndex > -1) {
+    promo = true;
+    tokens.splice(promoIndex, 1);
+  }
+
+  // Teléfono MX
+  const phoneIndex = tokens.findIndex(t => normalizeMx(t));
+  if (phoneIndex > -1) {
+    phone = normalizeMx(tokens[phoneIndex]);
+    tokens.splice(phoneIndex, 1);
+  }
+
+  // Monto
+  const amountIndex = tokens.findIndex(t => /^\d+(\.\d{1,2})?$/.test(t));
+  if (amountIndex > -1) {
+    amount = parseFloat(tokens[amountIndex]);
+    tokens.splice(amountIndex, 1);
+  }
+
+  // Fecha
+  const dateIndex = tokens.findIndex(t =>
+    /^(\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}-\d{1,2}-\d{1,2})$/.test(t)
+  );
+  if (dateIndex > -1) {
+    const parsedDate = dayjs(tokens[dateIndex], [
+      'DD/MM/YYYY', 'D/M/YYYY', 'DD-MM-YYYY', 'YYYY-MM-DD'
+    ]);
+    if (parsedDate.isValid()) due = parsedDate.format('YYYY-MM-DD');
+    tokens.splice(dateIndex, 1);
+  }
+
+  // Nombre residual
+  const name = tokens.length ? tokens.join(' ') : null;
+
+  return { phone, name, amount, due, promo };
+}
+
 // Inicializa cliente -----------------------------------
 const client = new Client({
   authStrategy: new LocalAuth(),
@@ -36,42 +81,40 @@ client.on('ready', () => console.log('✅  WhatsApp listo'));
 
 
 client.on('message', async msg => {
-  // sólo chats privados
-  if (!msg.from.endsWith('@c.us')) {
-    console.log(`🚫 Mensaje discriminado (no privado): ${msg.from}`);
-    return;
-  }
-  const waId = msg.from.split('@')[0];     // “5213312345678”
-  if (!isAuthorized(waId)) {
-    console.log(`🚫 Mensaje discriminado (no autorizado): ${waId}`);
-    return;
-  }         // ignora remitentes no autorizados
+  // Sólo chats privados y autorizados
+  if (!msg.from.endsWith('@c.us')) return;
+  const waId = msg.from.split('@')[0];
+  if (!isAuthorized(waId)) return;
 
-  // División por espacios o líneas para soportar “llamar 3312343176” y “llamar\n3312343176”
-  const [cmd, arg] = msg.body.trim().split(/\s+/, 2);
+  // Comando y argumentos
+  const [cmd, ...rest] = msg.body.trim().split(/\s+/);
+  if (cmd.toLowerCase() !== 'llamar') return;
+  incrementRequest();
+  incrementCommand('llamar');
 
-  if (cmd.toLowerCase() !== 'llamar') {
-    console.log(`🚫 Mensaje discriminado (comando no reconocido): ${cmd}`);
-    return;
-  }
+  const rawArgs = rest.join(' ');
+  const composed = rawArgs.length > 0;
+  const variant  = composed ? 'compuesto' : 'simple';
 
-  // Arma payload base
-  console.log(`✅ Procesando mensaje de: ${waId}`);
-      incrementRequest();
-      incrementCommand(cmd.toLowerCase());
-  const payload = { sender: `+${waId}`, original: `${cmd} ` };
-  let phone = '';
-  if (arg && arg.trim()) {
-    phone = normalizeMx(arg);
-    if (!phone) {
-      await msg.reply('❌ Número inválido. Usa 10 dígitos o incluye LADA.');
+  // Payload base
+  const payload = {
+    variant,
+    action: 'llamar',
+    sender: `+${waId}`,
+    original: msg.body
+  };
+
+  // Datos extra para "compuesto"
+  if (composed) {
+    const { phone, name, amount, due, promo } = parseArgs(rawArgs);
+    if (phone === null && name === null) {
+      await msg.reply('❌ Indica al menos nombre o teléfono.');
       return;
     }
+    Object.assign(payload, { phone, name, amount, due, promo });
   }
-  payload.action = 'llamar';
-  payload.phone = phone;
 
-  // Envía al webhook Make --------------------------------
+  // Envío al webhook
   try {
     await axios.post(miWebhook, payload, {
       headers: { 'Content-Type': 'application/json' }
