@@ -6,6 +6,7 @@ import axios from 'axios';
 import fs from 'fs';
 import { parsePhoneNumber } from 'libphonenumber-js';
 import 'dotenv/config';
+import { incrementRequest, incrementCommand } from './metrics.js';
 const miWebhook = 'https://hook.us2.make.com/ejkp3x36158bwbqape954lk6qak5a3r1';
 
 // Carga números autorizados ----------------------------
@@ -33,6 +34,7 @@ const client = new Client({
 client.on('qr', qr => qrcode.generate(qr, { small: true }));
 client.on('ready', () => console.log('✅  WhatsApp listo'));
 
+
 client.on('message', async msg => {
   // sólo chats privados
   if (!msg.from.endsWith('@c.us')) {
@@ -55,6 +57,8 @@ client.on('message', async msg => {
 
   // Arma payload base
   console.log(`✅ Procesando mensaje de: ${waId}`);
+      incrementRequest();
+      incrementCommand(cmd.toLowerCase());
   const payload = { sender: `+${waId}`, original: `${cmd} ` };
   let phone = '';
   if (arg && arg.trim()) {
@@ -69,7 +73,7 @@ client.on('message', async msg => {
 
   // Envía al webhook Make --------------------------------
   try {
-     await axios.post(miWebhook, payload, {
+    await axios.post(miWebhook, payload, {
       headers: { 'Content-Type': 'application/json' }
     });
     console.log('📤 Webhook enviado:', payload);
